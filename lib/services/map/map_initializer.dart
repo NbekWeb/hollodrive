@@ -9,7 +9,7 @@ import 'nearby_cars_service.dart';
 class MapInitializer {
   final MarkerManager markerManager;
   final Function(Position) onLocationObtained;
-  final Function() onLocationError;
+  final Function(String) onLocationError;
   final Function(GoogleMapController) onMapReady;
 
   MapInitializer({
@@ -39,14 +39,19 @@ class MapInitializer {
 
   /// Get current location
   Future<void> _getCurrentLocation() async {
-    final position = await LocationService.getCurrentLocation();
+    final result = await LocationService.getCurrentLocation();
     
-    if (position == null) {
-      onLocationError();
+    if (result.isFailure && result.error != null) {
+      final errorMessage = LocationService.getErrorMessage(result.error!);
+      onLocationError(errorMessage);
       return;
     }
 
-    onLocationObtained(position);
+    if (result.position != null) {
+      onLocationObtained(result.position!);
+    } else {
+      onLocationError(LocationService.getErrorMessage(LocationError.unknown));
+    }
   }
 
   /// Start location tracking

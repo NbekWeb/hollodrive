@@ -104,7 +104,10 @@ class _MapSearchBarState extends State<MapSearchBar> {
                               style: TextStyle(color: Colors.white.withValues(alpha: 0.7)),
                             )
                           : null,
-                      onTap: () => widget.onPlaceSelected(suggestion),
+                      onTap: () {
+                        print('🔴 MapSearchBar: Place tapped - ${suggestion.description}');
+                        widget.onPlaceSelected(suggestion);
+                      },
                       tileColor: surfaceColor,
                     );
                   },

@@ -42,6 +42,10 @@ class MapWidget extends StatelessWidget {
         controller.setMapStyle(darkMapStyle);
         onMapCreated(controller);
       },
+      onTap: (LatLng position) {
+        // Allow taps to pass through to widgets above the map
+        // This prevents the map from blocking tap events on overlaying widgets
+      },
       markers: markers,
       polylines: polylines,
       myLocationEnabled: false, // Disable to use custom markers

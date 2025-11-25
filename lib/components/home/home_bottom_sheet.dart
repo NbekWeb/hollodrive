@@ -12,6 +12,11 @@ class HomeBottomSheet extends StatefulWidget {
   final void Function(String description, double latitude, double longitude)?
       onSearchResultSelected;
   final VoidCallback? onSheetTap;
+  final VoidCallback? onBookNowPressed;
+  final VoidCallback? onSearchCleared;
+  final String? routeDistance;
+  final String? routeDuration;
+  final String? initialSearchValue;
 
   const HomeBottomSheet({
     super.key,
@@ -19,6 +24,11 @@ class HomeBottomSheet extends StatefulWidget {
     this.onCategoryUnselected,
     this.onSearchResultSelected,
     this.onSheetTap,
+    this.onBookNowPressed,
+    this.onSearchCleared,
+    this.routeDistance,
+    this.routeDuration,
+    this.initialSearchValue,
   });
 
   @override
@@ -41,6 +51,26 @@ class HomeBottomSheetState extends State<HomeBottomSheet> {
   void initState() {
     super.initState();
     _searchFocusNode.addListener(_handleSearchFocusChange);
+    // Set initial search value if provided
+    if (widget.initialSearchValue != null && widget.initialSearchValue!.isNotEmpty) {
+      _searchController.text = widget.initialSearchValue!;
+    }
+  }
+
+  @override
+  void didUpdateWidget(HomeBottomSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Update search field if initialSearchValue changed
+    if (widget.initialSearchValue != oldWidget.initialSearchValue) {
+      if (widget.initialSearchValue != null && widget.initialSearchValue!.isNotEmpty) {
+        _searchController.text = widget.initialSearchValue!;
+      } else if (widget.initialSearchValue == null || widget.initialSearchValue!.isEmpty) {
+        // Only clear if explicitly set to null/empty, not on first build
+        if (oldWidget.initialSearchValue != null) {
+          _searchController.clear();
+        }
+      }
+    }
   }
 
   @override
@@ -90,6 +120,7 @@ class HomeBottomSheetState extends State<HomeBottomSheet> {
                       widget.onSheetTap?.call();
                     },
                     child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         _buildHeaderSection(context),
@@ -99,17 +130,21 @@ class HomeBottomSheetState extends State<HomeBottomSheet> {
                           focusNode: _searchFocusNode,
                           apiKey: _googleMapsApiKey,
                           onPlaceSelected: _onSearchResultSelected,
-                          onTextChanged: (_) {},
+                          onTextChanged: (text) {
+                            // If search is cleared, call onSearchCleared callback
+                            if (text.isEmpty) {
+                              widget.onSearchCleared?.call();
+                            }
+                          },
                           onUnfocus: () {},
                         ),
                         const SizedBox(height: 20),
                         _buildSuggestions(),
                         const SizedBox(height: 20),
                         BookNowButton(
-                          enabled: _selectedSuggestion != null,
-                          onPressed: () {},
+                          enabled: widget.routeDistance != null && widget.routeDuration != null,
+                          onPressed: widget.onBookNowPressed,
                         ),
-                        const SizedBox(height: 8),
                       ],
                     ),
                   ),
@@ -236,6 +271,75 @@ class HomeBottomSheetState extends State<HomeBottomSheet> {
     widget.onSearchResultSelected?.call(description, latitude, longitude);
     _searchFocusNode.unfocus();
     _setExpanded(false);
+  }
+
+  Widget _buildRouteInfo() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade900,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade800),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.route,
+            color: Colors.blue.shade400,
+            size: 24,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Taxi yo\'li',
+                  style: TextStyle(
+                    color: Colors.grey.shade400,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.straighten,
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      widget.routeDistance ?? '',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Icon(
+                      Icons.access_time,
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      widget.routeDuration ?? '',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

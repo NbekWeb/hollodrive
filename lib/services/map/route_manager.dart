@@ -32,14 +32,34 @@ class RouteManager {
         '&destination=$destStr'
         '&key=${constants.googleMapsApiKey}'
         '&mode=driving'
-        '&alternatives=false',
+        '&alternatives=true', // Get all alternative routes to find shortest distance
       );
 
       final response = await http.get(url);
       final data = json.decode(response.body);
 
-      if (data['status'] == 'OK') {
-        final route = data['routes'][0];
+      if (data['status'] == 'OK' && data['routes'] != null && data['routes'].isNotEmpty) {
+        // Find the route with shortest distance
+        Map<String, dynamic>? shortestRoute;
+        int shortestDistance = 999999999;
+        
+        for (var route in data['routes']) {
+          final legs = route['legs'] as List;
+          if (legs.isNotEmpty) {
+            final totalDistance = legs.fold<int>(
+              0,
+              (sum, leg) => sum + (leg['distance']['value'] as int),
+            );
+            
+            if (totalDistance < shortestDistance) {
+              shortestDistance = totalDistance;
+              shortestRoute = route;
+            }
+          }
+        }
+        
+        // Use shortest route, or fallback to first route if no shortest found
+        final route = shortestRoute ?? data['routes'][0];
         final points = route['overview_polyline']['points'];
         List<LatLng> routeCoordinates = MapService.decodePolyline(points);
         
@@ -57,7 +77,9 @@ class RouteManager {
         
         await onRouteCoordinatesUpdated(routeCoordinates);
 
-        final legs = route['legs'] as List;
+        // Use the shortest route for legs calculation
+        final selectedRoute = shortestRoute ?? data['routes'][0];
+        final legs = selectedRoute['legs'] as List;
         LatLng? pickupPoint;
         
         if (legs.isNotEmpty) {
@@ -89,6 +111,9 @@ class RouteManager {
         } else {
           _drawDrivingRoute(routeCoordinates);
         }
+
+        // Print "haromi" after polyline is drawn
+        print('haromi');
 
         return RouteResult(
           routeCoordinates: routeCoordinates,

@@ -1,7 +1,11 @@
-import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import '../../components/usefull/custom_toast.dart';
+import '../../services/api/chat.dart';
+import '../../services/api/user.dart';
+import '../../services/chat/websocket_service.dart';
+import '../../models/chat_conversation.dart';
+import '../../models/chat_message.dart' as chat_models;
 
 class HelpPage extends StatefulWidget {
   const HelpPage({super.key});
@@ -13,50 +17,305 @@ class HelpPage extends StatefulWidget {
 class _HelpPageState extends State<HelpPage> {
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
-  final ImagePicker _imagePicker = ImagePicker();
   
-  final List<ChatMessage> _messages = [
-    ChatMessage(
-      text: "Hello, my name Francis. Hollodrive support manager. How can I help you?",
-      isFromUser: false,
-      timestamp: DateTime.now().subtract(const Duration(minutes: 2)),
-    ),
-    ChatMessage(
-      text: "I want to do something",
-      isFromUser: true,
-      timestamp: DateTime.now().subtract(const Duration(minutes: 1)),
-    ),
-  ];
+  List<chat_models.ChatMessage> _messages = [];
+  ChatConversation? _currentConversation;
+  int? _currentUserId;
+  bool _isLoading = true;
+  bool _isSending = false;
+  StreamSubscription<Map<String, dynamic>>? _chatSubscription;
+  StreamSubscription<Map<String, dynamic>>? _notificationSubscription;
+  Timer? _pollingTimer;
 
   @override
   void initState() {
     super.initState();
+    _messageController.addListener(_onMessageChanged);
+    _initializeChat();
   }
 
   @override
   void dispose() {
+    _messageController.removeListener(_onMessageChanged);
     _messageController.dispose();
     _scrollController.dispose();
+    _chatSubscription?.cancel();
+    _notificationSubscription?.cancel();
+    _pollingTimer?.cancel();
+    WebSocketService.disconnectAll();
     super.dispose();
   }
 
-  void _sendMessage({String? text, File? image}) {
-    if (text == null && image == null) return;
+  void _onMessageChanged() {
+    setState(() {}); // Update UI to enable/disable send button
+  }
 
+  Future<void> _initializeChat() async {
     setState(() {
-      _messages.add(
-        ChatMessage(
-          text: text ?? '',
-          isFromUser: true,
-          timestamp: DateTime.now(),
-          image: image,
-        ),
-      );
+      _isLoading = true;
     });
 
-    _messageController.clear();
+    try {
+      // Get current user ID
+      await _getCurrentUserId();
+
+      // Get conversations list
+      await _loadConversations();
+
+      // If no conversations, create one
+      if (_conversations.isEmpty) {
+        await _createConversation();
+        await _loadConversations();
+      }
+
+      // Connect to WebSocket for notifications
+      await WebSocketService.connectNotifications();
+      _notificationSubscription?.cancel();
+      _notificationSubscription = WebSocketService.notificationStream?.listen(
+        (data) {
+          print('HelpPage: Notification received: $data');
+          if (mounted) {
+            _loadMessages();
+          }
+        },
+        onError: (error) {
+          print('HelpPage: Notification stream error: $error');
+        },
+        onDone: () {
+          print('HelpPage: Notification stream closed');
+        },
+      );
+
+      // Select first conversation
+      if (_conversations.isNotEmpty) {
+        await _selectConversation(_conversations.first);
+      }
+    } catch (e) {
+      print('Error initializing chat: $e');
+      if (mounted) {
+        CustomToast.showError(context, 'Error initializing chat: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  List<ChatConversation> _conversations = [];
+
+  Future<void> _getCurrentUserId() async {
+    try {
+      final response = await UserApi.getUser();
+      if (response.statusCode == 200 && response.data != null) {
+        final data = response.data as Map<String, dynamic>;
+        final userData = data['data'] as Map<String, dynamic>?;
+        if (userData != null && userData['id'] != null) {
+          setState(() {
+            _currentUserId = userData['id'] as int;
+          });
+        }
+      }
+    } catch (e) {
+      print('Error getting current user ID: $e');
+    }
+  }
+
+  Future<void> _loadConversations() async {
+    try {
+      final response = await ChatApi.getConversationsList();
+      if (response.statusCode == 200 && response.data != null) {
+        final data = response.data as Map<String, dynamic>;
+        final conversationsData = data['data'] as List<dynamic>?;
+        
+        if (conversationsData != null) {
+          setState(() {
+            _conversations = conversationsData
+                .map((json) => ChatConversation.fromJson(json as Map<String, dynamic>))
+                .toList();
+          });
+        }
+      }
+    } catch (e) {
+      print('Error loading conversations: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> _createConversation() async {
+    try {
+      final response = await ChatApi.createConversation(
+        subject: 'test',
+        userType: 'rider',
+      );
+      
+      if (response.statusCode == 201 && response.data != null) {
+        final data = response.data as Map<String, dynamic>;
+        final conversationData = data['data'] as Map<String, dynamic>?;
+        
+        if (conversationData != null) {
+          final conversation = ChatConversation.fromJson(conversationData);
+          print('Conversation created with ID: ${conversation.id}');
+        }
+      }
+    } catch (e) {
+      print('Error creating conversation: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> _selectConversation(ChatConversation conversation) async {
+    setState(() {
+      _currentConversation = conversation;
+      _messages = [];
+    });
+
+    // Cancel previous subscription
+    _chatSubscription?.cancel();
+
+    // Disconnect previous chat WebSocket
+    await WebSocketService.disconnectChat();
+
+    // Connect to chat WebSocket
+    try {
+      print('HelpPage: Connecting to chat WebSocket for conversation ${conversation.id}');
+      await WebSocketService.connectChat(conversation.id);
+      
+      // Listen to chat messages
+      _chatSubscription = WebSocketService.chatStream?.listen(
+        (data) {
+          print('HelpPage: Chat message received via WebSocket: $data');
+          print('HelpPage: Message type: ${data.runtimeType}');
+          print('HelpPage: Message keys: ${data.keys}');
+          
+          if (mounted) {
+            // Check if this is a new message
+            if (data['type'] == 'message' || data['message'] != null || data['id'] != null) {
+              print('HelpPage: Reloading messages...');
+              _loadMessages();
+            } else {
+              print('HelpPage: Unknown message format, reloading anyway...');
+              _loadMessages();
+            }
+          }
+        },
+        onError: (error) {
+          print('HelpPage: Chat stream error: $error');
+          print('HelpPage: Error type: ${error.runtimeType}');
+        },
+        onDone: () {
+          print('HelpPage: Chat stream closed');
+        },
+        cancelOnError: false,
+      );
+      
+      print('HelpPage: Chat subscription created');
+      
+      // Print connection status
+      final status = WebSocketService.getConnectionStatus();
+      print('HelpPage: WebSocket connection status: $status');
+    } catch (e) {
+      print('HelpPage: Error connecting to chat WebSocket: $e');
+      if (mounted) {
+        CustomToast.showError(context, 'WebSocket connection error: $e');
+      }
+    }
+
+    // Load messages
+    await _loadMessages();
     
-    // Auto scroll to bottom
+    // Print connection status after loading messages
+    final status = WebSocketService.getConnectionStatus();
+    print('HelpPage: WebSocket connection status after loading messages: $status');
+    
+    // Start polling as fallback if WebSocket fails
+    _startPolling();
+  }
+
+  void _startPolling() {
+    // Cancel existing timer
+    _pollingTimer?.cancel();
+    
+    // Start polling every 3 seconds to check for new messages
+    _pollingTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (mounted && _currentConversation != null) {
+        _loadMessages();
+      } else {
+        timer.cancel();
+      }
+    });
+    
+    print('HelpPage: Started polling for new messages every 3 seconds');
+  }
+
+  Future<void> _loadMessages() async {
+    if (_currentConversation == null) return;
+
+    try {
+      final response = await ChatApi.getMessages(
+        conversationId: _currentConversation!.id,
+      );
+
+      if (response.statusCode == 200 && response.data != null) {
+        final data = response.data as Map<String, dynamic>;
+        final messagesData = data['data'] as List<dynamic>?;
+
+        if (messagesData != null) {
+          setState(() {
+            _messages = messagesData
+                .map((json) => chat_models.ChatMessage.fromJson(
+                      json as Map<String, dynamic>,
+                      currentUserId: _currentUserId,
+                    ))
+                .toList();
+          });
+
+          // Scroll to bottom
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (_scrollController.hasClients) {
+              _scrollController.animateTo(
+                _scrollController.position.maxScrollExtent,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+              );
+            }
+          });
+        }
+      }
+    } catch (e) {
+      print('Error loading messages: $e');
+    }
+  }
+
+  Future<void> _sendMessage({String? text}) async {
+    if (_currentConversation == null) return;
+    if (text == null || text.trim().isEmpty) return;
+
+    final messageText = text.trim();
+    
+    // Clear input immediately
+    _messageController.clear();
+
+    // Create temporary message for optimistic update
+    final tempMessage = chat_models.ChatMessage(
+      id: -DateTime.now().millisecondsSinceEpoch, // Temporary negative ID
+      conversation: _currentConversation!.id,
+      message: messageText,
+      sender: null, // Will be set when message is loaded from server
+      isFromMe: true,
+      isFromSupport: false,
+      createdAt: DateTime.now(),
+    );
+
+    // Add temporary message to list immediately
+    setState(() {
+      _isSending = true;
+      _messages = [..._messages, tempMessage];
+    });
+
+    // Scroll to bottom
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
@@ -66,91 +325,73 @@ class _HelpPageState extends State<HelpPage> {
         );
       }
     });
-  }
 
-  Future<void> _pickImageFromGallery() async {
     try {
-      final XFile? image = await _imagePicker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 85,
+      // Send message via API
+      final response = await ChatApi.sendMessage(
+        conversationId: _currentConversation!.id,
+        message: messageText,
       );
 
-      if (image != null) {
-        _sendMessage(image: File(image.path));
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        // Reload messages to get the real message from server
+        await _loadMessages();
+      } else {
+        // If failed, remove temporary message
+        if (mounted) {
+          setState(() {
+            _messages = _messages.where((m) => m.id != tempMessage.id).toList();
+          });
+          CustomToast.showError(context, 'Failed to send message');
+        }
       }
     } catch (e) {
+      print('Error sending message: $e');
+      // Remove temporary message on error
       if (mounted) {
-        CustomToast.showError(
-          context,
-          'Failed to pick image: ${e.toString()}',
-        );
+        setState(() {
+          _messages = _messages.where((m) => m.id != tempMessage.id).toList();
+        });
+        CustomToast.showError(context, 'Error sending message: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSending = false;
+        });
       }
     }
   }
 
-  Future<void> _pickImageFromCamera() async {
-    try {
-      final XFile? image = await _imagePicker.pickImage(
-        source: ImageSource.camera,
-        imageQuality: 85,
-      );
-
-      if (image != null) {
-        _sendMessage(image: File(image.path));
-      }
-    } catch (e) {
-      if (mounted) {
-        CustomToast.showError(
-          context,
-          'Failed to take photo: ${e.toString()}',
-        );
-      }
-    }
-  }
-
-  void _showImageSourceDialog() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.grey.shade900,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (BuildContext context) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.photo_library, color: Colors.white),
-                title: const Text(
-                  'Choose from Gallery',
-                  style: TextStyle(color: Colors.white),
-                ),
-                onTap: () {
-                  Navigator.pop(context);
-                  _pickImageFromGallery();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.camera_alt, color: Colors.white),
-                title: const Text(
-                  'Take Photo',
-                  style: TextStyle(color: Colors.white),
-                ),
-                onTap: () {
-                  Navigator.pop(context);
-                  _pickImageFromCamera();
-                },
-              ),
-            ],
-          ),
-        );
-      },
-    );
+  bool get _canSend {
+    return _messageController.text.trim().isNotEmpty && !_isSending;
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          elevation: 0,
+          leading: IconButton(
+            icon: Icon(
+              Icons.chevron_left,
+              color: Colors.blue.shade300,
+              size: 28,
+            ),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
+        body: const Center(
+          child: CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -221,15 +462,22 @@ class _HelpPageState extends State<HelpPage> {
         children: [
           // Chat messages area
           Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final message = _messages[index];
-                return _buildMessageBubble(message);
-              },
-            ),
+            child: _messages.isEmpty
+                ? const Center(
+                    child: Text(
+                      'No messages yet',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  )
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                    itemCount: _messages.length,
+                    itemBuilder: (context, index) {
+                      final message = _messages[index];
+                      return _buildMessageBubble(message);
+                    },
+                  ),
           ),
           // Input area
           Container(
@@ -238,39 +486,6 @@ class _HelpPageState extends State<HelpPage> {
             child: SafeArea(
               child: Row(
                 children: [
-                  // Camera icon
-                  IconButton(
-                    icon: Icon(
-                      Icons.camera_alt_outlined,
-                      color: Colors.grey.shade400,
-                      size: 24,
-                    ),
-                    onPressed: _showImageSourceDialog,
-                  ),
-                  // App icon (A)
-                  IconButton(
-                    icon: Container(
-                      width: 24,
-                      height: 24,
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade700,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: const Center(
-                        child: Text(
-                          'A',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                    onPressed: () {
-                      // Handle app store
-                    },
-                  ),
                   // Text input field
                   Expanded(
                     child: Container(
@@ -297,10 +512,25 @@ class _HelpPageState extends State<HelpPage> {
                           border: InputBorder.none,
                         ),
                         onSubmitted: (_) {
-                          _sendMessage(text: _messageController.text.trim());
+                          if (_canSend) {
+                            _sendMessage(text: _messageController.text.trim());
+                          }
                         },
                       ),
                     ),
+                  ),
+                  // Send button
+                  IconButton(
+                    icon: Icon(
+                      Icons.send,
+                      color: _canSend ? const Color(0xFF007AFF) : Colors.grey.shade400,
+                      size: 24,
+                    ),
+                    onPressed: _canSend
+                        ? () {
+                            _sendMessage(text: _messageController.text.trim());
+                          }
+                        : null,
                   ),
                 ],
               ),
@@ -311,22 +541,22 @@ class _HelpPageState extends State<HelpPage> {
     );
   }
 
-  Widget _buildMessageBubble(ChatMessage message) {
+  Widget _buildMessageBubble(chat_models.ChatMessage message) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         mainAxisAlignment:
-            message.isFromUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+            message.isFromMe ? MainAxisAlignment.end : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          if (!message.isFromUser) ...[
+          if (!message.isFromMe) ...[
             const SizedBox(width: 8),
           ],
           Flexible(
             child: Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: message.isFromUser
+                color: message.isFromMe
                     ? const Color(0xFFFF3B30) // Red for user messages
                     : Colors.grey.shade800, // Dark grey for support messages
                 borderRadius: BorderRadius.circular(18),
@@ -334,23 +564,34 @@ class _HelpPageState extends State<HelpPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Image
-                  if (message.image != null)
+                  // Image/Attachment - only show if from support/admin
+                  if (message.isFromSupport && (message.attachment != null || message.file != null))
                     ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: Image.file(
-                        message.image!,
+                      child: Image.network(
+                        message.attachment ?? message.file ?? '',
                         width: 200,
                         height: 200,
                         fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) {
+                          return Container(
+                            width: 200,
+                            height: 200,
+                            color: Colors.grey.shade700,
+                            child: const Icon(
+                              Icons.broken_image,
+                              color: Colors.white,
+                            ),
+                          );
+                        },
                       ),
                     ),
                   // Text
-                  if (message.text.isNotEmpty) ...[
-                    if (message.image != null)
+                  if (message.message.isNotEmpty) ...[
+                    if (message.isFromSupport && (message.attachment != null || message.file != null))
                       const SizedBox(height: 8),
                     Text(
-                      message.text,
+                      message.message,
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 16,
@@ -361,25 +602,11 @@ class _HelpPageState extends State<HelpPage> {
               ),
             ),
           ),
-          if (message.isFromUser) ...[
+          if (message.isFromMe) ...[
             const SizedBox(width: 8),
           ],
         ],
       ),
     );
   }
-}
-
-class ChatMessage {
-  final String text;
-  final bool isFromUser;
-  final DateTime timestamp;
-  final File? image;
-
-  ChatMessage({
-    required this.text,
-    required this.isFromUser,
-    required this.timestamp,
-    this.image,
-  });
 }

@@ -24,6 +24,7 @@ dependencies:
   permission_handler: ^11.3.0
   flutter_secure_storage: ^9.2.2
   shared_preferences: ^2.2.2
+  web_socket_channel: ^3.0.1
 
 dev_dependencies:
   flutter_test:
@@ -61,7 +62,7 @@ flutter_native_splash:
   android: true
 
 flutter_launcher_icons:
-  android: true
+  android: false
   ios: true
   image_path: "assets/images/l.png"
   remove_alpha_ios: true

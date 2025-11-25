@@ -8,13 +8,18 @@ import '../components/map/map_search_bar.dart';
 import '../components/map/map_floating_buttons.dart';
 import '../components/map/place_suggestion.dart';
 import '../components/map/map_constants.dart';
-import '../services/map/places_service.dart';
-import '../services/map/route_manager.dart';
+import '../components/map/address_bar.dart';
+import '../components/map/ride_plan_bottom_sheet.dart';
+import '../components/map/manage_price_bottom_sheet.dart';
+import '../components/map/book_now_button.dart';
+import '../components/usefull/custom_toast.dart';
+import '../services/map/map_location_service.dart';
+import '../services/map/map_route_service.dart';
+import '../services/map/map_place_service.dart';
 import '../services/map/car_movement_service.dart';
 import '../services/map/marker_manager.dart';
-import '../services/map/map_initializer.dart';
+import '../services/map/route_manager.dart';
 import '../services/map/map_service.dart';
-import '../services/map/distance_matrix_service.dart';
 
 class MapPage extends StatefulWidget {
   const MapPage({super.key});
@@ -31,22 +36,32 @@ class _MapPageState extends State<MapPage> {
   final TextEditingController _searchController = TextEditingController();
   List<PlaceSuggestion> _searchResults = [];
   StreamSubscription<Position>? _positionStream;
-  List<LatLng>? _routeCoordinates;
-  CarMovementService _carMovementService = CarMovementService();
-  MarkerManager _markerManager = MarkerManager();
-  RouteManager _routeManager = RouteManager();
-  MapInitializer? _mapInitializer;
+  
+  // Services
+  final CarMovementService _carMovementService = CarMovementService();
+  final MarkerManager _markerManager = MarkerManager();
+  final RouteManager _routeManager = RouteManager();
+  late final MapLocationService _locationService;
+  late final MapRouteService _routeService;
+  late final MapPlaceService _placeService;
+  
+  // State
   bool _isUserMarkerDragged = false;
+  String? _originAddress;
+  String? _destinationAddress;
+  bool _isBottomSheetOpen = false;
 
   @override
   void initState() {
     super.initState();
+    _locationService = MapLocationService(markerManager: _markerManager);
+    _routeService = MapRouteService(routeManager: _routeManager);
+    _placeService = MapPlaceService(markerManager: _markerManager);
     _initializeMap();
   }
 
   Future<void> _initializeMap() async {
-    _mapInitializer = MapInitializer(
-      markerManager: _markerManager,
+    await _locationService.initialize(
       onLocationObtained: (Position position) async {
         setState(() {
           _currentPosition = position;
@@ -54,146 +69,107 @@ class _MapPageState extends State<MapPage> {
         });
         await _onLocationReady();
       },
-      onLocationError: () {
-        _showError('Location services are disabled or permissions are denied.');
+      onLocationError: (String errorMessage) {
+        CustomToast.showError(context, errorMessage);
         setState(() => _isLoading = false);
       },
-      onMapReady: (controller) {
-        _mapController = controller;
-      },
+      onMapReady: (controller) => _mapController = controller,
     );
-    
-    await _mapInitializer!.initialize();
   }
 
   Future<void> _onLocationReady() async {
     if (_currentPosition == null) return;
-    
-    _markerManager.updateUserLocationMarker(
+    _originAddress = await _locationService.getAddressFromCoordinates(
+      LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+    );
+    setState(() {});
+    _locationService.updateUserLocationMarker(
       position: _currentPosition!,
       isDragged: _isUserMarkerDragged,
-      onDragStateChanged: (bool dragged) {
-        setState(() => _isUserMarkerDragged = dragged);
-      },
-      onDragEnd: (Position newPosition) {
-        setState(() => _currentPosition = newPosition);
-        if (_destination != null) {
-          _drawRoute();
-        }
-        Future.delayed(const Duration(seconds: 5), () {
-          if (mounted) {
-            setState(() => _isUserMarkerDragged = false);
-          }
-        });
-      },
+      onDragStateChanged: (bool dragged) => setState(() => _isUserMarkerDragged = dragged),
+      onDragEnd: _handleMarkerDragEnd,
     );
-    
     _startLocationTracking();
-    _addNearbyCars();
+    await _addNearbyCars();
     await _updateCarMarker();
-      
     _mapController?.animateCamera(
-      CameraUpdate.newLatLngZoom(
-        LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-        15.0,
-      ),
+      CameraUpdate.newLatLngZoom(LatLng(_currentPosition!.latitude, _currentPosition!.longitude), 15.0),
     );
+  }
+
+  Future<void> _handleMarkerDragEnd(Position newPosition) async {
+    setState(() => _currentPosition = newPosition);
+    _originAddress = await _locationService.getAddressFromCoordinates(
+      LatLng(newPosition.latitude, newPosition.longitude),
+    );
+    setState(() {});
+    if (_destination != null) await _drawRoute();
+    Future.delayed(const Duration(seconds: 5), () {
+      if (mounted) setState(() => _isUserMarkerDragged = false);
+    });
   }
 
   @override
   void dispose() {
     _positionStream?.cancel();
     _carMovementService.dispose();
+    _locationService.dispose();
     _searchController.dispose();
     _mapController?.dispose();
     super.dispose();
   }
 
   void _startLocationTracking() {
-    if (_mapInitializer == null) return;
-
-    _positionStream = _mapInitializer!.startLocationTracking(
+    _positionStream = _locationService.startLocationTracking(
       onLocationUpdate: (Position position) {
         if (!mounted) return;
-        
         if (!_isUserMarkerDragged) {
-          setState(() {
-            _currentPosition = position;
+          setState(() => _currentPosition = position);
+          _locationService.getAddressFromCoordinates(
+            LatLng(position.latitude, position.longitude),
+          ).then((address) {
+            if (mounted) setState(() => _originAddress = address);
           });
-          _markerManager.updateUserLocationMarker(
+          _locationService.updateUserLocationMarker(
             position: position,
             isDragged: _isUserMarkerDragged,
-            onDragStateChanged: (bool dragged) {
-              setState(() => _isUserMarkerDragged = dragged);
-            },
-            onDragEnd: (Position newPosition) {
-              setState(() => _currentPosition = newPosition);
-              if (_destination != null) {
-                _drawRoute();
-              }
-              Future.delayed(const Duration(seconds: 5), () {
-                if (mounted) {
-                  setState(() => _isUserMarkerDragged = false);
-                }
-              });
-            },
+            onDragStateChanged: (bool dragged) => setState(() => _isUserMarkerDragged = dragged),
+            onDragEnd: _handleMarkerDragEnd,
           );
         }
-
-        if (_destination != null) {
-          _drawRoute();
-        }
-
-        if (_routeCoordinates == null || _routeCoordinates!.isEmpty) {
-          _mapController?.animateCamera(
-            CameraUpdate.newLatLng(
-              LatLng(position.latitude, position.longitude),
-            ),
-          );
+        if (_destination != null) _drawRoute();
+        if (_routeService.routeCoordinates == null || _routeService.routeCoordinates!.isEmpty) {
+          _mapController?.animateCamera(CameraUpdate.newLatLng(LatLng(position.latitude, position.longitude)));
         }
       },
     );
   }
   
   Future<void> _updateCarMarker() async {
-    if (_mapInitializer == null) return;
-    
-    LatLng? carPosition;
-    
-    if (_routeCoordinates != null && _routeCoordinates!.isNotEmpty) {
-      final currentIndex = _carMovementService.currentRouteIndex;
-      if (currentIndex < _routeCoordinates!.length) {
-        carPosition = _routeCoordinates![currentIndex];
-      } else {
-        carPosition = _routeCoordinates!.last;
-      }
-    } else if (_currentPosition != null) {
-      carPosition = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
-    }
-    
+    if (_locationService.mapInitializer == null) return;
+    final routeCoords = _routeService.routeCoordinates;
+    final carPosition = routeCoords != null && routeCoords.isNotEmpty
+        ? routeCoords[_carMovementService.currentRouteIndex.clamp(0, routeCoords.length - 1)]
+        : _currentPosition != null ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude) : null;
     if (carPosition != null) {
       await _markerManager.updateCarMarker(
         position: carPosition,
-        icon: _mapInitializer!.carIcon,
+        icon: _locationService.carIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
         bearing: _carMovementService.carBearing,
-        );
+      );
     }
   }
   
   void _startCarMovement() {
-    if (_routeCoordinates == null || _routeCoordinates!.isEmpty) return;
-    
+    final routeCoords = _routeService.routeCoordinates;
+    if (routeCoords == null || routeCoords.isEmpty) return;
     _carMovementService.startMovement(
-      routeCoordinates: _routeCoordinates!,
+      routeCoordinates: routeCoords,
       onPositionUpdate: (int index, double? bearing) async {
         await _updateCarMarker();
-        if (mounted) {
-          setState(() {});
-        }
+        if (mounted) setState(() {});
       },
-      onCameraUpdate: (LatLng position) {
-        _mapController?.animateCamera(CameraUpdate.newLatLng(position));
-      },
+      onCameraUpdate: (LatLng position) => _mapController?.animateCamera(CameraUpdate.newLatLng(position)),
       onRouteComplete: () {},
       isMounted: () => mounted,
     );
@@ -201,172 +177,161 @@ class _MapPageState extends State<MapPage> {
 
   Future<void> _searchPlaces(String query) async {
     if (query.isEmpty) {
-      setState(() {
-        _searchResults = [];
-      });
+      setState(() => _searchResults = []);
       return;
     }
-    
-    final results = await PlacesService.searchPlaces(query);
-        setState(() {
-      _searchResults = results;
-        });
+    final results = await _placeService.searchPlaces(query);
+    setState(() => _searchResults = results);
   }
 
   Future<void> _selectPlace(PlaceSuggestion suggestion) async {
-    final placeDetails = await PlacesService.getPlaceDetails(suggestion.placeId);
-    
+    final placeDetails = await _placeService.selectPlace(suggestion);
     if (placeDetails == null) {
       _showError('Error getting place details');
       return;
     }
-
-    final location = placeDetails['geometry']['location'];
-        final lat = location['lat'] as double;
-        final lng = location['lng'] as double;
-
-        setState(() {
-          _destination = LatLng(lat, lng);
-          _searchController.text = suggestion.description;
-          _searchResults = [];
-        });
-
-        // Add destination marker
-    _markerManager.addDestinationMarker(
-            position: _destination!,
-              title: suggestion.mainText,
-              snippet: suggestion.secondaryText,
-        );
-
-        // Draw route
-        if (_currentPosition != null) {
-          await _drawRoute();
-        }
-
-        // Move camera to show both locations
-        _mapController?.animateCamera(
-          CameraUpdate.newLatLngBounds(
+    setState(() {
+      _destination = placeDetails.destination;
+      _destinationAddress = placeDetails.destinationAddress;
+      _searchController.text = placeDetails.description;
+      _searchResults = [];
+    });
+    if (_currentPosition == null) return;
+    _originAddress = await _routeService.getOriginAddress(_currentPosition!);
+    setState(() {});
+    await _drawRoute();
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngBounds(
         MapService.boundsFromLatLngList([
-              LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-              _destination!,
-            ]),
-            100.0,
-          ),
-        );
+          LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+          _destination!,
+        ]),
+        100.0,
+      ),
+    );
+    Future.delayed(const Duration(milliseconds: 1000), () {
+      if (mounted && _destination != null && _routeService.routeInfo != null && !_isBottomSheetOpen) {
+        _showRidePlanBottomSheet();
+      }
+    });
   }
 
   Future<void> _drawRoute() async {
     if (_currentPosition == null || _destination == null) return;
-
-    // Get distance and duration using Distance Matrix API
-    final distanceMatrix = await DistanceMatrixService.getDistanceMatrix(
-      origin: _currentPosition!,
-      destination: _destination!,
-      mode: 'driving',
-    );
-
-    if (distanceMatrix != null) {
-      print('Route Distance: ${distanceMatrix.distanceText}');
-      print('Route Duration: ${distanceMatrix.durationText}');
-      // You can display this information in UI if needed
-    }
-
-    final result = await _routeManager.drawRoute(
+    final success = await _routeService.drawRoute(
       origin: _currentPosition!,
       destination: _destination!,
       onRouteCoordinatesUpdated: (List<LatLng> coordinates) async {
-        setState(() {
-          _routeCoordinates = coordinates;
-          _carMovementService.reset();
-        });
+        _carMovementService.reset();
         await _updateCarMarker();
         _startCarMovement();
       },
     );
-
-    if (result != null) {
-              setState(() {
-        // Polylines are managed by RouteManager
-      });
-    }
+    if (success) setState(() {});
   }
 
-  Future<void> _findNearbyPlaceAndDrawRoute() async {
-    if (_currentPosition == null) {
-      _showError('Current location not available');
-      return;
-    }
-
-    // This function can be moved to a service if needed
-    // For now, keeping it simple
-    _showError('Feature coming soon');
-  }
-
-  /// Add nearby cars on roads around user location
   Future<void> _addNearbyCars() async {
-    if (_currentPosition == null || _mapInitializer == null) return;
-    
-    await _mapInitializer!.addNearbyCars(
-      userPosition: _currentPosition!,
-      carIcon: _mapInitializer!.carIcon ?? 
-               BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-      );
-    
-    setState(() {
-      // Markers updated in marker manager
-    });
+    if (_currentPosition == null || _locationService.carIcon == null) return;
+    await _locationService.addNearbyCars(userPosition: _currentPosition!, carIcon: _locationService.carIcon!);
+    setState(() {});
   }
 
   void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: AppColors.darkError,
+    CustomToast.showError(context, message);
+  }
+
+  void _showRidePlanBottomSheet() {
+    if (_destination == null || _routeService.routeInfo == null) {
+      _showError(_destination == null ? 'Please select a destination first' : 'Route information not available');
+      return;
+    }
+    if (_isBottomSheetOpen) return;
+    setState(() => _isBottomSheetOpen = true);
+    final closeSheet = () {
+      Navigator.pop(context);
+      setState(() => _isBottomSheetOpen = false);
+    };
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: RidePlanBottomSheet(
+          routeDistance: _routeService.routeInfo?.distanceText,
+          routeDuration: _routeService.routeInfo?.durationText,
+          onBack: closeSheet,
+          onManagePrice: (double initialPrice) {
+            // Show ManagePriceBottomSheet
+            showModalBottomSheet(
+              context: context,
+              isScrollControlled: true,
+              backgroundColor: Colors.transparent,
+              builder: (context) => ManagePriceBottomSheet(
+                initialPrice: initialPrice,
+                onBack: () => Navigator.of(context).pop(),
+                onConfirm: (double newPrice) {
+                  print('New price: \$${newPrice.toStringAsFixed(2)}');
+                },
+              ),
+            );
+          },
+          onConfirmRide: () {
+            closeSheet();
+            _showError('Ride confirmed!');
+          },
+        ),
       ),
-    );
+    ).then((_) {
+      if (mounted) setState(() => _isBottomSheetOpen = false);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final brightness = Theme.of(context).brightness;
-    final backgroundColor = AppColors.getPrimaryColor(brightness);
-
     return Scaffold(
-      backgroundColor: backgroundColor,
+      backgroundColor: AppColors.getPrimaryColor(Theme.of(context).brightness),
       body: Stack(
         children: [
-          // Google Map
           MapWidget(
             isLoading: _isLoading,
             currentPosition: _currentPosition,
             markers: _markerManager.markers,
             polylines: _routeManager.polylines,
-                  onMapCreated: (GoogleMapController controller) {
-                    _mapController = controller;
-            },
+            onMapCreated: (controller) => _mapController = controller,
             darkMapStyle: darkMapStyle,
-                ),
-          // Search bar
+          ),
           MapSearchBar(
             searchController: _searchController,
             searchResults: _searchResults,
-            onSearchChanged: (String query) {
-              _searchPlaces(query);
-            },
-            onPlaceSelected: (PlaceSuggestion suggestion) {
-              _selectPlace(suggestion);
-                        },
+            onSearchChanged: _searchPlaces,
+            onPlaceSelected: _selectPlace,
           ),
-          // Floating buttons
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 80,
+            left: 0,
+            right: 0,
+            child: Material(
+              elevation: 15,
+              color: Colors.transparent,
+              child: AddressBar(
+                originAddress: _originAddress,
+                destinationAddress: _destinationAddress,
+                onOriginTap: () {},
+                onDestinationTap: () {},
+                onAddStop: () {},
+              ),
+            ),
+          ),
           MapFloatingButtons(
             currentPosition: _currentPosition,
             mapController: _mapController,
-            onFindNearbyPressed: _findNearbyPlaceAndDrawRoute,
+            onFindNearbyPressed: () => _showError('Feature coming soon'),
           ),
+          if (_destination != null && _routeService.routeInfo != null)
+            BookNowButton(onTap: _showRidePlanBottomSheet),
         ],
       ),
     );
   }
 }
-
-

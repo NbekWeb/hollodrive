@@ -125,23 +125,23 @@ class MarkerService {
       LatLng? carPosition;
       int positionAttempts = 0;
       do {
-        double distanceInDegrees = distance / 111000; // Convert meters to degrees (approx)
+      double distanceInDegrees = distance / 111000; // Convert meters to degrees (approx)
         
         // Add some random perpendicular offset to spread cars across different lanes
         double perpendicularOffset = (random.nextDouble() - 0.5) * 0.0001; // ~10m perpendicular
         double perpBearingRad = bearingRad + (math.pi / 2); // Perpendicular direction
-        
-        // Calculate position along the road
+      
+      // Calculate position along the road
         double latOffset = distanceInDegrees * math.cos(bearingRad) + 
                           perpendicularOffset * math.cos(perpBearingRad);
         double lngOffset = distanceInDegrees * math.sin(bearingRad) + 
                           perpendicularOffset * math.sin(perpBearingRad);
 
         carPosition = LatLng(
-          userPosition.latitude + latOffset,
-          userPosition.longitude + lngOffset,
-        );
-        
+        userPosition.latitude + latOffset,
+        userPosition.longitude + lngOffset,
+      );
+
         // Check minimum distance from existing cars
         bool tooClose = false;
         if (carPosition != null) {
@@ -171,70 +171,74 @@ class MarkerService {
     }
 
     // Snap all car positions to roads using Roads API
-    // Use Nearest Roads API to find main roads and avoid dead ends
+    // Use interpolate=true to get multiple points along the road for accurate bearing calculation
     try {
       final List<LatLng> snappedPositions = [];
       final List<double> finalBearings = [];
       
-      // Snap each car individually and verify it's on a main road
+      // Snap each car individually and calculate road direction
       for (int i = 0; i < carPositions.length; i++) {
-        // First, try to find nearest roads (this gives us multiple options)
-        final nearestRoads = await RoadsApiService.findNearestRoads(
-          carPositions[i].latitude,
-          carPositions[i].longitude,
-        );
+        // Use snapToRoads with interpolate=true to get multiple points along the road
+        // This helps us calculate the exact road direction
+        final snappedPoints = await RoadsApiService.snapToRoads([carPositions[i]]);
         
         LatLng? bestPosition;
         double? bestBearing;
         
-        if (nearestRoads.isNotEmpty) {
-          // Use the first nearest road (usually the main road)
-          bestPosition = nearestRoads[0].location;
-          bestBearing = carBearings[i];
+        if (snappedPoints.isNotEmpty) {
+          // Use the snapped point
+          bestPosition = snappedPoints[0].location;
           
-          // If we have multiple roads, prefer the one closest to our intended direction
-          if (nearestRoads.length > 1) {
-            double minAngleDiff = double.infinity;
-            for (var road in nearestRoads) {
-              // Calculate angle difference between intended bearing and road direction
-              double angleDiff = (road.location.latitude - carPositions[i].latitude).abs() +
-                                 (road.location.longitude - carPositions[i].longitude).abs();
-              if (angleDiff < minAngleDiff) {
-                minAngleDiff = angleDiff;
-                bestPosition = road.location;
-              }
+          // Calculate bearing based on road direction
+          // If we have multiple snapped points (from interpolation), use them to calculate direction
+          if (snappedPoints.length > 1) {
+            // Use the first two points to determine road direction
+            bestBearing = Geolocator.bearingBetween(
+              snappedPoints[0].location.latitude,
+              snappedPoints[0].location.longitude,
+              snappedPoints[1].location.latitude,
+              snappedPoints[1].location.longitude,
+            );
+          } else {
+            // If only one point, try to find nearby points on the same road
+            // Create a small offset point in the direction of intended bearing
+            double bearingRad = carBearings[i] * math.pi / 180;
+            double offsetDistance = 0.0001; // ~10 meters
+            LatLng offsetPoint = LatLng(
+              carPositions[i].latitude + offsetDistance * math.cos(bearingRad),
+              carPositions[i].longitude + offsetDistance * math.sin(bearingRad),
+            );
+            
+            // Snap the offset point to get road direction
+            final offsetSnapped = await RoadsApiService.snapToRoads([offsetPoint]);
+            if (offsetSnapped.isNotEmpty) {
+              // Calculate bearing from snapped point to offset snapped point
+              bestBearing = Geolocator.bearingBetween(
+                bestPosition.latitude,
+                bestPosition.longitude,
+                offsetSnapped[0].location.latitude,
+                offsetSnapped[0].location.longitude,
+              );
+            } else {
+              // Fallback: use intended bearing
+              bestBearing = carBearings[i];
             }
           }
         } else {
-          // Fallback to snapToRoad if nearestRoads doesn't work
-          final snappedPoint = await RoadsApiService.snapToRoad(
+          // Fallback: try nearest roads
+          final nearestRoads = await RoadsApiService.findNearestRoads(
             carPositions[i].latitude,
             carPositions[i].longitude,
           );
-          if (snappedPoint != null) {
-            bestPosition = snappedPoint.location;
+          
+          if (nearestRoads.isNotEmpty) {
+            bestPosition = nearestRoads[0].location;
             bestBearing = carBearings[i];
           }
         }
         
-        if (bestPosition != null) {
+        if (bestPosition != null && bestBearing != null) {
           snappedPositions.add(bestPosition);
-          
-          // Calculate bearing based on road direction
-          if (bestBearing == null) {
-            bestBearing = carBearings[i];
-          }
-          
-          // Refine bearing based on snapped position direction
-          if (i > 0 && snappedPositions.length > 1) {
-            // Use bearing from previous snapped position for more accurate rotation
-            bestBearing = Geolocator.bearingBetween(
-              snappedPositions[snappedPositions.length - 2].latitude,
-              snappedPositions[snappedPositions.length - 2].longitude,
-              bestPosition.latitude,
-              bestPosition.longitude,
-            );
-          }
           finalBearings.add(bestBearing);
         }
       }
@@ -258,18 +262,18 @@ class MarkerService {
       print('Error snapping cars to roads: $e');
       // Fallback: use original positions if snap fails
       for (int i = 0; i < carPositions.length; i++) {
-        carMarkers.add(
-          Marker(
-            markerId: MarkerId('car_$i'),
+      carMarkers.add(
+        Marker(
+          markerId: MarkerId('car_$i'),
             position: carPositions[i],
-            icon: carIcon,
+          icon: carIcon,
             rotation: carBearings[i],
-            anchor: const Offset(0.5, 0.5),
+          anchor: const Offset(0.5, 0.5),
             flat: true,
-            zIndexInt: 1,
+          zIndexInt: 1,
             onTap: () => onTap(carPositions[i]),
-          ),
-        );
+        ),
+      );
       }
     }
 
