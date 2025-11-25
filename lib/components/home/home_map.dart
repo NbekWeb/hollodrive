@@ -1,0 +1,171 @@
+import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:geolocator/geolocator.dart';
+import '../../colors.dart';
+
+class HomeMap extends StatelessWidget {
+  final bool isLoading;
+  final Position? currentPosition;
+  final Set<Marker> markers;
+  final Set<Polyline> polylines;
+  final Function(GoogleMapController) onMapCreated;
+  final Function(LatLng) onTap;
+  final Function(LatLng) onMarkerTapped;
+
+  // Dark mode map style JSON
+  static const String _darkMapStyle = '''
+  [
+    {
+      "elementType": "geometry",
+      "stylers": [{"color": "#242f3e"}]
+    },
+    {
+      "elementType": "labels.text.stroke",
+      "stylers": [{"color": "#242f3e"}]
+    },
+    {
+      "elementType": "labels.text.fill",
+      "stylers": [{"color": "#746855"}]
+    },
+    {
+      "featureType": "administrative.locality",
+      "elementType": "labels.text.fill",
+      "stylers": [{"color": "#d59563"}]
+    },
+    {
+      "featureType": "poi",
+      "stylers": [{"visibility": "off"}]
+    },
+    {
+      "featureType": "poi.business",
+      "stylers": [{"visibility": "off"}]
+    },
+    {
+      "featureType": "poi.attraction",
+      "stylers": [{"visibility": "off"}]
+    },
+    {
+      "featureType": "poi.place_of_worship",
+      "stylers": [{"visibility": "off"}]
+    },
+    {
+      "featureType": "poi.school",
+      "stylers": [{"visibility": "off"}]
+    },
+    {
+      "featureType": "poi.sports_complex",
+      "stylers": [{"visibility": "off"}]
+    },
+    {
+      "featureType": "poi.park",
+      "elementType": "geometry",
+      "stylers": [{"color": "#263c3f"}]
+    },
+    {
+      "featureType": "poi.park",
+      "elementType": "labels.text.fill",
+      "stylers": [{"color": "#6b9a76"}]
+    },
+    {
+      "featureType": "road",
+      "elementType": "geometry",
+      "stylers": [{"color": "#38414e"}]
+    },
+    {
+      "featureType": "road",
+      "elementType": "geometry.stroke",
+      "stylers": [{"color": "#212a37"}]
+    },
+    {
+      "featureType": "road",
+      "elementType": "labels.text.fill",
+      "stylers": [{"color": "#9ca5b3"}]
+    },
+    {
+      "featureType": "road.highway",
+      "elementType": "geometry",
+      "stylers": [{"color": "#746855"}]
+    },
+    {
+      "featureType": "road.highway",
+      "elementType": "geometry.stroke",
+      "stylers": [{"color": "#1f2835"}]
+    },
+    {
+      "featureType": "road.highway",
+      "elementType": "labels.text.fill",
+      "stylers": [{"color": "#f3d19c"}]
+    },
+    {
+      "featureType": "transit",
+      "elementType": "geometry",
+      "stylers": [{"color": "#2f3948"}]
+    },
+    {
+      "featureType": "transit.station",
+      "elementType": "labels.text.fill",
+      "stylers": [{"color": "#d59563"}]
+    },
+    {
+      "featureType": "water",
+      "elementType": "geometry",
+      "stylers": [{"color": "#17263c"}]
+    },
+    {
+      "featureType": "water",
+      "elementType": "labels.text.fill",
+      "stylers": [{"color": "#515c6d"}]
+    },
+    {
+      "featureType": "water",
+      "elementType": "labels.text.stroke",
+      "stylers": [{"color": "#17263c"}]
+    }
+  ]
+  ''';
+
+  const HomeMap({
+    super.key,
+    required this.isLoading,
+    this.currentPosition,
+    required this.markers,
+    required this.polylines,
+    required this.onMapCreated,
+    required this.onTap,
+    required this.onMarkerTapped,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final brightness = Theme.of(context).brightness;
+
+    if (isLoading) {
+      return Center(
+        child: CircularProgressIndicator(
+          color: AppColors.getErrorColor(brightness),
+        ),
+      );
+    }
+
+    return GoogleMap(
+      initialCameraPosition: CameraPosition(
+        target: currentPosition != null
+            ? LatLng(currentPosition!.latitude, currentPosition!.longitude)
+            : const LatLng(45.5017, -73.5673), // Montreal default
+        zoom: 15.0,
+      ),
+      onMapCreated: (GoogleMapController controller) {
+        controller.setMapStyle(_darkMapStyle);
+        onMapCreated(controller);
+      },
+      onTap: onTap,
+      markers: markers,
+      polylines: polylines,
+      myLocationEnabled: false,
+      myLocationButtonEnabled: false,
+      mapType: MapType.normal,
+      zoomControlsEnabled: false,
+    );
+  }
+}
+
