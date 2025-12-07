@@ -231,7 +231,7 @@ class _LoginWithPasswordPageState extends State<LoginWithPasswordPage> {
                 // Password input
                 CustomInputField(
                   label: 'Password',
-                  hintText: '6 Character',
+                  hintText: '8 Character',
                   controller: _passwordController,
                   obscureText: true,
                   onChanged: (_) => _validatePassword(),

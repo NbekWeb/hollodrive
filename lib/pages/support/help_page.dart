@@ -458,27 +458,33 @@ class _HelpPageState extends State<HelpPage> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // Chat messages area
-          Expanded(
-            child: _messages.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No messages yet',
-                      style: TextStyle(color: Colors.grey),
+      body: GestureDetector(
+        onTap: () {
+          // Klaviaturani yopish
+          FocusScope.of(context).unfocus();
+        },
+        behavior: HitTestBehavior.translucent,
+        child: Column(
+          children: [
+            // Chat messages area
+            Expanded(
+              child: _messages.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'No messages yet',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    )
+                  : ListView.builder(
+                      controller: _scrollController,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                      itemCount: _messages.length,
+                      itemBuilder: (context, index) {
+                        final message = _messages[index];
+                        return _buildMessageBubble(message);
+                      },
                     ),
-                  )
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                    itemCount: _messages.length,
-                    itemBuilder: (context, index) {
-                      final message = _messages[index];
-                      return _buildMessageBubble(message);
-                    },
-                  ),
-          ),
+            ),
           // Input area
           Container(
             color: Colors.black,
@@ -511,10 +517,12 @@ class _HelpPageState extends State<HelpPage> {
                           ),
                           border: InputBorder.none,
                         ),
+                        maxLines: 10,
+                        minLines: 1,
+                        keyboardType: TextInputType.multiline,
                         onSubmitted: (_) {
-                          if (_canSend) {
-                            _sendMessage(text: _messageController.text.trim());
-                          }
+                          // Multiline TextField'da onSubmitted ishlamaydi
+                          // Enter tugmasi yangi qator qo'shadi
                         },
                       ),
                     ),
@@ -537,6 +545,7 @@ class _HelpPageState extends State<HelpPage> {
             ),
           ),
         ],
+        ),
       ),
     );
   }

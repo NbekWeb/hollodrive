@@ -89,11 +89,11 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "hellodrive" "\0"
+            VALUE "CompanyName", "com.nbekdev" "\0"
+            VALUE "FileDescription", "hollodrive" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "hellodrive" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2025 com.example. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2025 com.nbekdev. All rights reserved." "\0"
             VALUE "OriginalFilename", "hellodrive.exe" "\0"
             VALUE "ProductName", "hellodrive" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
